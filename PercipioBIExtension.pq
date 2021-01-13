@@ -73,7 +73,7 @@ PollForReportWithRetry = (baseUrl as text, orgId as text, bearerToken as text, j
                 response = PollForReport(baseUrl, orgId, bearerToken, jobId)
             in
                 response,
-        (i) => #duration(0, 0, 0, Number.Power(2, i)),
+        (i) => #duration(0, 0, Number.Power(2, i), 0),
         10)
     in
         result;
