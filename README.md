@@ -21,7 +21,7 @@ Call Percipio Reporting Services API to get Learner Activity report data in Powe
 1. Open Power BI Desktop, enable the Data Extensions under "Options and settings" and then "Options"
 ![](img/security_settings.png)
 
-1. Download the [bin\release\PercipioBIExtension.mez](bin\release\PercipioBIExtension.mez) file from this repository and save to the folderabove.
+1. Download the [bin/release/PercipioBIExtension.mez](bin/release/PercipioBIExtension.mez) file from this repository and save to the folderabove.
 
 ## How to use it
 
