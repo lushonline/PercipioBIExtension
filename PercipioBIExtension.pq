@@ -20,9 +20,10 @@ GenerateReport = (baseUrl as text, orgId as text, bearerToken as text, timeFrame
             #"Authorization" = "Bearer " & bearerToken,
             #"Content-Type" = "application/json"
         ],
-        body = 
+        body =
         "{
           ""timeFrame"": """&timeFrame&""",
+          ""contentType"": ""AudioBook,Audio Summary,Book,Book Summary,Channel,Course,Linked Content"",
           ""sort"": {
             ""field"": ""lastAccessDate"",
             ""order"": ""desc""
@@ -31,7 +32,7 @@ GenerateReport = (baseUrl as text, orgId as text, bearerToken as text, timeFrame
           ""formatType"": ""JSON""
         }",
         response = Web.Contents(
-                        endpoint, 
+                        endpoint,
                         [Headers=headers,
                          ManualCredentials = true,
                          ManualStatusHandling={200,202},
@@ -52,7 +53,7 @@ PollForReport = (baseUrl as text, orgId as text, bearerToken as text, jobId as t
             #"Content-Type" = "application/json"
         ],
         response =Web.Contents(
-                endpoint, 
+                endpoint,
                 [Headers=headers,
                  ManualCredentials = true
                 ]),
@@ -73,8 +74,8 @@ PollForReportWithRetry = (baseUrl as text, orgId as text, bearerToken as text, j
                 response = PollForReport(baseUrl, orgId, bearerToken, jobId)
             in
                 response,
-        (i) => #duration(0, 0, Number.Power(2, i), 0),
-        10)
+        (i) => #duration(0, 0, 0, Number.Power(2, i)),
+        100)
     in
         result;
 
@@ -88,12 +89,13 @@ GetReportData = (baseUrl as text, orgId as text, bearerToken as text, jobId as t
 [DataSource.Kind="PercipioBIExtension", Publish="PercipioBIExtension.Publish"]
 shared PercipioBIExtension.LearnerActivityData = Value.ReplaceType(PercipioBIExtension.LearnerActivityImpl, PercipioBIExtension.LearnerActivityImplType);
 
-PercipioBIExtension.LearnerActivityImplType = 
+PercipioBIExtension.LearnerActivityImplType =
     let
         baseUrl = (type text) meta [
              Documentation.FieldCaption = Extension.LoadString("PercpioBIExtension.Label.baseUrl"),
              Documentation.FieldDescription = Extension.LoadString("PercpioBIExtension.Label.baseUrl"),
-             Documentation.AllowedValues = {"https://api.percipio.com", "https://dew1-api.percipio.com" }
+             Documentation.AllowedValues = {"https://api.percipio.com", "https://dew1-api.percipio.com" },
+             Documentation.DefaultValue = { "https://api.percipio.com" }
         ],
         orgId = (type text) meta [
              Documentation.FieldCaption =  Extension.LoadString("PercpioBIExtension.Label.orgId"),
@@ -106,7 +108,8 @@ PercipioBIExtension.LearnerActivityImplType =
         timeFrame = (type text) meta [
            Documentation.FieldCaption = Extension.LoadString("PercpioBIExtension.Label.timeFrame"),
              Documentation.FieldDescription = Extension.LoadString("PercpioBIExtension.Label.timeFrame"),
-             Documentation.AllowedValues = {"DAY", "WEEK", "THIRTY_DAYS", "CALENDAR_MONTH" }
+             Documentation.AllowedValues = {"DAY", "WEEK", "THIRTY_DAYS", "CALENDAR_MONTH" },
+             Documentation.DefaultValue = { "DAY" }
         ],
         t = type function (baseUrl as baseUrl, orgId as orgId, bearerToken as bearerToken, timeFrame as timeFrame) as table
     in
@@ -125,20 +128,26 @@ PercipioBIExtension.LearnerActivityImpl = (baseUrl as text, orgId as text, beare
         table;
 
 shared PercipioBIExtension.LearnerActivity = (baseUrl as text, orgId as text, bearerToken as text, timeFrame as text) =>
-    let 
+    let
         //1)	Request report be generated
         jobId = GenerateReport(baseUrl, orgId, bearerToken, timeFrame),
         //2)	Retrieve the data
         source = if Value.Is(jobId, type text) then GetReportData(baseUrl, orgId, bearerToken, jobId)
-    else 
+    else
         jobId
     in
         source;
 
 // Data Source Kind description
 PercipioBIExtension = [
-    // TestConnection is required to enable the connector through the Gateway
-    TestConnection = (dataSourcePath) => 
+    // Set the TestConnection handler to enable gateway support.
+    // The TestConnection handler will invoke your data source function to 
+    // validate the credentials the user has provider. Ideally, this is not 
+    // an expensive operation to perform. By default, the dataSourcePath value 
+    // will be a json string containing the required parameters of your data  
+    // source function. These should be parsed and parsed as individual parameters
+    // to the specified data source function.
+    TestConnection = (dataSourcePath) =>
         let
             json = Json.Document(dataSourcePath),
             baseUrl= json[baseUrl],
@@ -146,11 +155,12 @@ PercipioBIExtension = [
             bearerToken = json[bearerToken],
             timeFrame = json[timeFrame]
         in
-            { "PercipioBIExtension.LearnerActivityData", baseUrl, orgId, bearerToken, timeFrame},
+            { "PercipioBIExtension.LearnerActivityData", baseUrl, orgId, bearerToken, "DAY"},
     Authentication = [
         Implicit = []
-    ],
-    Label = Extension.LoadString("DataSourceLabel")
+    ]
+    // Exclude Label so that it is easier to see which connection in Power BI
+    // ,Label = Extension.LoadString("DataSourceLabel")
 ];
 
 // Data Source UI publishing description
@@ -158,7 +168,7 @@ PercipioBIExtension.Publish = [
     Beta = true,
     Category = "Other",
     ButtonText = { Extension.LoadString("ButtonTitle"), Extension.LoadString("ButtonHelp") },
-    LearnMoreUrl = "https://powerbi.microsoft.com/",
+    LearnMoreUrl = "https://github.com/martinholden-skillsoft/PercipioBIExtension/blob/main/README.md",
     SourceImage = PercipioBIExtension.Icons,
     SourceTypeImage = PercipioBIExtension.Icons
 ];
