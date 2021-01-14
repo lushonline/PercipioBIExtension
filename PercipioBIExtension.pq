@@ -1,4 +1,5 @@
 // This file contains your Data Connector logic
+[Version = "1.0.0"]
 section PercipioBIExtension;
 
 // Helper Function
@@ -12,7 +13,90 @@ Value.WaitFor = (producer as function, interval as function, optional count as n
     in
         List.Last(list);
 
-//Percipio Functions
+
+EnforceSchema.Strict = 1;               // Add any missing columns, remove extra columns, set table type
+EnforceSchema.IgnoreExtraColumns = 2;   // Add missing columns, do not remove extra columns
+EnforceSchema.IgnoreMissingColumns = 3; // Do not add or remove columns
+
+SchemaTransformTable = (table as table, schema as table, optional enforceSchema as number) as table =>
+    let
+        // Default to EnforceSchema.Strict
+        _enforceSchema = if (enforceSchema <> null) then enforceSchema else EnforceSchema.Strict,
+
+        // Applies type transforms to a given table
+        EnforceTypes = (table as table, schema as table) as table =>
+            let
+                map = (t) => if Type.Is(t, type list) or Type.Is(t, type record) or t = type any then null else t,
+                mapped = Table.TransformColumns(schema, {"Type", map}),
+                omitted = Table.SelectRows(mapped, each [Type] <> null),
+                existingColumns = Table.ColumnNames(table),
+                removeMissing = Table.SelectRows(omitted, each List.Contains(existingColumns, [Name])),
+                primativeTransforms = Table.ToRows(removeMissing),
+                changedPrimatives = Table.TransformColumnTypes(table, primativeTransforms)
+            in
+                changedPrimatives,
+
+        // Returns the table type for a given schema
+        SchemaToTableType = (schema as table) as type =>
+            let
+                toList = List.Transform(schema[Type], (t) => [Type=t, Optional=false]),
+                toRecord = Record.FromList(toList, schema[Name]),
+                toType = Type.ForRecord(toRecord, false)
+            in
+                type table (toType),
+
+        // Determine if we have extra/missing columns.
+        // The enforceSchema parameter determines what we do about them.
+        schemaNames = schema[Name],
+        foundNames = Table.ColumnNames(table),
+        addNames = List.RemoveItems(schemaNames, foundNames),
+        extraNames = List.RemoveItems(foundNames, schemaNames),
+        tmp = Text.NewGuid(),
+        added = Table.AddColumn(table, tmp, each []),
+        expanded = Table.ExpandRecordColumn(added, tmp, addNames),
+        result = if List.IsEmpty(addNames) then table else expanded,
+        fullList =
+            if (_enforceSchema = EnforceSchema.Strict) then
+                schemaNames
+            else if (_enforceSchema = EnforceSchema.IgnoreMissingColumns) then
+                foundNames
+            else
+                schemaNames & extraNames,
+
+        // Select the final list of columns.
+        // These will be ordered according to the schema table.
+        reordered = Table.SelectColumns(result, fullList, MissingField.Ignore),
+        enforcedTypes = EnforceTypes(reordered, schema),
+        withType = if (_enforceSchema = EnforceSchema.Strict) then Value.ReplaceType(enforcedTypes, SchemaToTableType(schema)) else enforcedTypes
+    in
+        withType;
+
+// Schema
+LearnerActivitySchema = #table({"Name", "Type"}, {
+        {"userId", type text},
+        {"firstName", type text},
+        {"lastName", type text},
+        {"audience", type text},
+        {"contentUuid", type text},
+        {"contentId", type text},
+        {"contentTitle", type text},
+        {"contentType", type text},
+        {"languageCode", type text},
+        {"status", type text},
+        {"completedDate", DateTime.Type},
+        {"duration", Int32.Type},
+        {"estimatedDuration", Int32.Type},
+        {"firstAccess", DateTime.Type},
+        {"lastAccess", DateTime.Type},
+        {"totalAccesses", Int32.Type},
+        {"%OfVideoOrBook", Percentage.Type},
+        {"emailAddress", type text},
+        {"durationHms", type text},
+        {"estimatedDurationHms", type text},
+        {"userUuid", type text}
+    });
+
+// Percipio Functions
 GenerateReport = (baseUrl as text, orgId as text, bearerToken as text, timeFrame as text) =>
     let
         endpoint = baseUrl&"/reporting/v1/organizations/"&orgId&"/report-requests/learning-activity",
@@ -41,7 +125,8 @@ GenerateReport = (baseUrl as text, orgId as text, bearerToken as text, timeFrame
         buffered = Binary.Buffer(response), /* avoid risk of double request */
         asJson = try Json.Document(buffered, 65001) otherwise null,
         jsonContent = if asJson is action then null else asJson meta Value.Metadata(buffered),
-        result=jsonContent[id]
+        reportid=jsonContent[id],
+        result=Diagnostics.Trace(TraceLevel.Information, "GenerateReport. Response:" & Text.FromBinary(buffered,65001), () => reportid, true)
     in
         result;
 
@@ -62,9 +147,45 @@ PollForReport = (baseUrl as text, orgId as text, bearerToken as text, jobId as t
         jsonContent = if asJson is action then null else asJson meta Value.Metadata(buffered),
         reportid = try jsonContent[reportId] otherwise null,
         isinprogess = reportid <> null,
-        result = if isinprogess then null else jsonContent
+        result = if isinprogess
+            then
+                let
+                    response=Diagnostics.Trace(TraceLevel.Information, "PollForReport. Response:" & Text.FromBinary(buffered,65001), () => null, true)
+                in
+                    response
+            else
+                jsonContent
     in
         result;
+
+// Request non existent report
+// If the response is a 404 - we know the credentials are valid
+ValidateCredentials = (baseUrl as text, orgId as text, bearerToken as text) =>
+    let
+        endpoint = baseUrl&"/reporting/v1/organizations/"&orgId&"/report-requests/"&orgId,
+        headers = [
+            #"Authorization" = "Bearer " & bearerToken,
+            #"Content-Type" = "application/json"
+        ],
+        response =Web.Contents(
+                endpoint,
+                [Headers=headers,
+                 ManualStatusHandling={404},
+                 ManualCredentials = true
+                ]),
+        buffered = Binary.Buffer(response) meta Value.Metadata(response), /* avoid risk of double request */
+        status = Value.Metadata(buffered)[Response.Status],
+        result = if status = 404
+            then
+                let
+                    result1=Diagnostics.Trace(TraceLevel.Information, "Validate Credentials Successful", () => true, true)
+                in
+                    result1
+            else
+                Error.Record("HTTP Status",Text.From(status), buffered)
+    in
+        result;
+
 
 PollForReportWithRetry = (baseUrl as text, orgId as text, bearerToken as text, jobId as text) =>
     let
@@ -74,20 +195,30 @@ PollForReportWithRetry = (baseUrl as text, orgId as text, bearerToken as text, j
                 response = PollForReport(baseUrl, orgId, bearerToken, jobId)
             in
                 response,
-        (i) => #duration(0, 0, 0, Number.Power(2, i)),
-        100)
+        (i) => #duration(0, 0, 0, Number.Power(2, i+1)),
+        11)
     in
         result;
 
 GetReportData = (baseUrl as text, orgId as text, bearerToken as text, jobId as text) =>
     let
         Response = PollForReportWithRetry(baseUrl, orgId, bearerToken, jobId),
-        ReportData = Table.FromRecords(Response,null,MissingField.UseNull)
+        ReportData = if Response <> null then
+             let   
+                ReportDataAsTable = Table.FromRecords(Response,null,MissingField.UseNull),
+                TableWithSchema = SchemaTransformTable(ReportDataAsTable, LearnerActivitySchema, EnforceSchema.IgnoreExtraColumns)
+            in
+                TableWithSchema
+        else
+             Table.FromRows({{"No records were found"}}, {"Message"})  
     in
         ReportData;
 
 [DataSource.Kind="PercipioBIExtension", Publish="PercipioBIExtension.Publish"]
 shared PercipioBIExtension.LearnerActivityData = Value.ReplaceType(PercipioBIExtension.LearnerActivityImpl, PercipioBIExtension.LearnerActivityImplType);
+
+[DataSource.Kind="PercipioBIExtension"]
+shared PercipioBIExtension.LearnerActivityDataTestConnection = Value.ReplaceType(PercipioBIExtension.TestConnectionImpl, PercipioBIExtension.LearnerActivityImplType);
 
 PercipioBIExtension.LearnerActivityImplType =
     let
@@ -127,6 +258,14 @@ PercipioBIExtension.LearnerActivityImpl = (baseUrl as text, orgId as text, beare
     in
         table;
 
+PercipioBIExtension.TestConnectionImpl = (baseUrl as text, orgId as text, bearerToken as text, timeFrame as text) =>
+    let
+       CheckCredentials = ValidateCredentials(baseUrl, orgId, bearerToken),
+       table = Table.FromRows({{"Percipio Credentials Valid"}}, {"Message"})  
+    in
+        table;
+
+
 shared PercipioBIExtension.LearnerActivity = (baseUrl as text, orgId as text, bearerToken as text, timeFrame as text) =>
     let
         //1)	Request report be generated
@@ -155,7 +294,7 @@ PercipioBIExtension = [
             bearerToken = json[bearerToken],
             timeFrame = json[timeFrame]
         in
-            { "PercipioBIExtension.LearnerActivityData", baseUrl, orgId, bearerToken, "DAY"},
+            { "PercipioBIExtension.LearnerActivityDataTestConnection", baseUrl, orgId, bearerToken, timeFrame},
     Authentication = [
         Implicit = []
     ]
