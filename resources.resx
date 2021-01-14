@@ -121,10 +121,10 @@
     <value>Connect to Percipio REST API to access Learner Activity data</value>
   </data>
   <data name="ButtonTitle" xml:space="preserve">
-    <value>PercipioBIExtension LearnerActivity</value>
+    <value>Percipio Learner Activity Data</value>
   </data>
   <data name="DataSourceLabel" xml:space="preserve">
-    <value>Percipio Percipio Learner Activity API demo extension</value>
+    <value>Percipio Learner Activity Data</value>
   </data>
   <data name="PercipioBIExtension.LearnerActivity" xml:space="preserve">
     <value>Percipio Learner Activity</value>
